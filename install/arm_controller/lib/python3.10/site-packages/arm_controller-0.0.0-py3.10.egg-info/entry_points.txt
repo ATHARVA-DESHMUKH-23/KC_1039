@@ -1,0 +1,5 @@
+[console_scripts]
+arm_manipulation = arm_controller.arm_manipulation:main
+aruco_perception = arm_controller.aruco_perception:main
+bad_fruits_perception = arm_controller.bad_fruits_perception:main
+

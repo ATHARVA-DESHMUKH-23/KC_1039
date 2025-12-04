@@ -1,0 +1,13 @@
+Metadata-Version: 2.1
+Name: arm-controller
+Version: 0.0.0
+Summary: Arm controller: aruco, bad-fruit perception and manipulation nodes
+Home-page: UNKNOWN
+Maintainer: atharva23
+Maintainer-email: atharvad2366@gmail.com
+License: ASR Robotics
+Platform: UNKNOWN
+Provides-Extra: test
+
+UNKNOWN
+

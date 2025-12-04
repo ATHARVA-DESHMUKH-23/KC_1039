@@ -1,0 +1,4 @@
+[console_scripts]
+ebot_nav = ebot_controller.ebot_nav:main
+shape_detector = ebot_controller.shape_detector:main
+

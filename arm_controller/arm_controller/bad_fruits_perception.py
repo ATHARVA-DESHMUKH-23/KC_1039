@@ -69,6 +69,9 @@ class FruitsTF(Node):
         # Timer for periodic processing
         self.create_timer(0.2, self.process_image, callback_group=self.cb_group)
 
+        # 🔹 New: debug image publisher
+        self.debug_img_pub = self.create_publisher(Image, '/fruits/debug_image', 10)
+
         if SHOW_IMAGE:
             cv2.namedWindow('fruits_tf_view', cv2.WINDOW_NORMAL)
 
@@ -212,13 +215,12 @@ class FruitsTF(Node):
 
         
     def process_image(self):
-        '''
-        Description: Timer-driven loop for periodic image processing.
-        Returns: None
-        '''
+        """
+        Timer-driven loop for periodic image processing.
+        """
         if self.cv_image is None or self.depth_image is None:
             return
-            
+
         # Camera intrinsics (from /camera_info)
         sizeCamX = 1280
         sizeCamY = 720
@@ -227,21 +229,26 @@ class FruitsTF(Node):
         focalX = 915.3003540039062
         focalY = 914.0320434570312
 
-        bad_fruits = self.bad_fruit_detection(self.cv_image)
+        # ---- 1) Detection on a clean copy ----
+        rgb_for_detection = self.cv_image.copy()
+        bad_fruits = self.bad_fruit_detection(rgb_for_detection)
 
+        # ---- 2) TF publishing ----
         import tf2_ros
         from geometry_msgs.msg import TransformStamped
         import math
+        import tf_transformations
+
         if not hasattr(self, 'tf_broadcaster'):
             self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
 
-        team_id = 1039  
+        team_id = 1039
 
-        # ---- Camera fixed transform relative to base ----
+        # Camera fixed transform relative to base
         CAMERA_TO_BASE = {
-            'x': 0.18,   # camera is 35 cm forward of base
-            'y': 0.007,    # centered
-            'z': 1.09,   # 40 cm above base
+            'x': 0.18,
+            'y': 0.007,
+            'z': 1.09,
             'roll': 0.0,
             'pitch': math.radians(42.0),
             'yaw': 0.0
@@ -254,54 +261,53 @@ class FruitsTF(Node):
         pitch = CAMERA_TO_BASE['pitch']
         yaw = CAMERA_TO_BASE['yaw']
 
-        # Rotation matrix for RPY (in case you mount camera tilted later)
-        Rx = np.array([[1, 0, 0],
-                    [0, math.cos(roll), -math.sin(roll)],
-                    [0, math.sin(roll),  math.cos(roll)]])
-        Ry = np.array([[ math.cos(pitch), 0, math.sin(pitch)],
-                    [0, 1, 0],
-                    [-math.sin(pitch), 0, math.cos(pitch)]])
-        Rz = np.array([[math.cos(yaw), -math.sin(yaw), 0],
-                    [math.sin(yaw),  math.cos(yaw), 0],
-                    [0, 0, 1]])
-        R = Rz @ Ry @ Rx  # Combined rotation
+        Rx = np.array([
+            [1, 0, 0],
+            [0, math.cos(roll), -math.sin(roll)],
+            [0, math.sin(roll),  math.cos(roll)]
+        ])
+        Ry = np.array([
+            [ math.cos(pitch), 0, math.sin(pitch)],
+            [0, 1, 0],
+            [-math.sin(pitch), 0, math.cos(pitch)]
+        ])
+        Rz = np.array([
+            [math.cos(yaw), -math.sin(yaw), 0],
+            [math.sin(yaw),  math.cos(yaw), 0],
+            [0, 0, 1]
+        ])
+        R = Rz @ Ry @ Rx
+
+        # Orientation of fruit frames (kept same as your code)
+        fruit_roll = np.pi       # flip Z
+        fruit_pitch = 0.0
+        fruit_yaw = -np.pi / 2.0
+        q = tf_transformations.quaternion_from_euler(fruit_roll, fruit_pitch, fruit_yaw)
 
         for fruit in bad_fruits:
             cX, cY = fruit['center']
             distance = fruit['distance']
 
-            # 1️⃣ Convert pixel + depth -> camera frame coordinates
+            # pixel + depth -> camera frame
             x_cam = float(distance * (cX - centerCamX) / focalX)
             y_cam = float(distance * (cY - centerCamY) / focalY)
             z_cam = float(distance)
 
-            # 2️⃣ Convert camera frame → robot’s frame orientation
-            #    Your custom mapping (camera: Z forward, X right, Y down)
+            # camera -> robot mapping
             x_r = z_cam
             y_r = -x_cam
             z_r = -y_cam
 
-            # 3️⃣ Apply fixed transform (camera → base)
             cam_point = np.array([[x_r], [y_r], [z_r]])
             base_point = R @ cam_point + np.array([[dx], [dy], [dz]])
             x_base, y_base, z_base = base_point.flatten()
 
-            #just transformaing tf to match 
-            import tf_transformations
-
-            # roll (X), pitch (Y), yaw (Z)
-            roll = np.pi      # flip Z down
-            pitch = 0
-            yaw = -np.pi/2     # rotate XY 90 deg clockwise
-
-            q = tf_transformations.quaternion_from_euler(roll, pitch, yaw)
-
-
-            # 4️⃣ Publish TF in base_link frame
             t = TransformStamped()
             t.header.stamp = self.get_clock().now().to_msg()
             t.header.frame_id = 'base_link'
             t.child_frame_id = f"{team_id}_bad_fruit_{fruit['id']}"
+
+            # ⚠️ remove -1.22 first; tune later if needed
             t.transform.translation.x = x_base-1.22
             t.transform.translation.y = y_base
             t.transform.translation.z = z_base
@@ -309,39 +315,55 @@ class FruitsTF(Node):
             t.transform.rotation.y = q[1]
             t.transform.rotation.z = q[2]
             t.transform.rotation.w = q[3]
+
             self.tf_broadcaster.sendTransform(t)
 
-            # Draw bounding boxes
-            if SHOW_IMAGE:
-                # Unpack the stable box
-                x_box, y_box, w_box, h_box = fruit['bbox']
+        # ---- 3) Build visualization image for RViz / debug ----
+        try:
+            vis_img = self.cv_image.copy()
 
-                # Draw a green rectangle
-                cv2.rectangle(self.cv_image,
-                            (x_box, y_box),
+            # AOI polygon (tray ROI)
+            h, w = vis_img.shape[:2]
+            tray_roi = np.array([[
+                (0, 0),
+                (w // 2, 0),
+                (w // 2, h),
+                (0, h)
+            ]], dtype=np.int32)
+
+            overlay = vis_img.copy()
+            cv2.polylines(overlay, tray_roi, isClosed=True, color=(0, 0, 255), thickness=2)
+            alpha = 0.3
+            vis_img = cv2.addWeighted(overlay, alpha, vis_img, 1 - alpha, 0)
+
+            # Draw fruit boxes & centers on vis_img
+            for fruit in bad_fruits:
+                x_box, y_box, w_box, h_box = fruit['bbox']
+                cX, cY = fruit['center']
+
+                cv2.rectangle(vis_img, (x_box, y_box),
                             (x_box + w_box, y_box + h_box),
                             (0, 255, 0), 2)
-
-                # Draw a filled green dot at the center
-                cX, cY = fruit['center']
-                cv2.circle(self.cv_image, (cX, cY), 4, (0, 255, 0), -1)
-
-                # Label
-                cv2.putText(self.cv_image, "bad_fruit",
+                cv2.circle(vis_img, (cX, cY), 4, (0, 255, 0), -1)
+                cv2.putText(vis_img, f"bad_fruit_{fruit['id']}",
                             (x_box, y_box - 10),
                             cv2.FONT_HERSHEY_SIMPLEX,
                             0.6, (0, 255, 0), 2)
 
-        # Show image (debug)
-        if SHOW_IMAGE:
-            try:
-                display_img = cv2.resize(self.cv_image, (640, 360))
+            # 🔹 Publish debug image as ROS topic
+            debug_msg = self.bridge.cv2_to_imgmsg(vis_img, encoding="bgr8")
+            self.debug_img_pub.publish(debug_msg)
+
+            # Optional local OpenCV window
+            if SHOW_IMAGE:
+                display_img = cv2.resize(vis_img, (640, 360))
                 cv2.imshow('fruits_tf_view', display_img)
                 cv2.waitKey(1)
-            except Exception as e:
-                self.get_logger().error(f"OpenCV display error: {e}")
 
-                
+        except Exception as e:
+            self.get_logger().error(f"Debug image error: {e}")
+
+                    
 
        
 def main(args=None):

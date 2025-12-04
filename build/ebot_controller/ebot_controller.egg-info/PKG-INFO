@@ -1,0 +1,13 @@
+Metadata-Version: 2.1
+Name: ebot-controller
+Version: 0.0.0
+Summary: eBot package containing navigation and LiDAR shape detection nodes
+Home-page: UNKNOWN
+Maintainer: atharva23
+Maintainer-email: atharvad2366@gmail.com
+License: TODO: License declaration
+Platform: UNKNOWN
+Provides-Extra: test
+
+UNKNOWN
+
